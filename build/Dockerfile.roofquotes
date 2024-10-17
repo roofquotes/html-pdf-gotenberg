@@ -1,0 +1,12 @@
+# Use the Gotenberg cloudrun image as the base image
+FROM gotenberg/gotenberg:8
+
+USER root
+
+COPY ./fonts /usr/local/share/fonts
+
+USER gotenberg
+
+EXPOSE 3000
+
+CMD ["gotenberg", "--chromium-start-timeout", "90s", "--chromium-auto-start", "true"] 
