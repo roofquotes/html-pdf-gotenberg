@@ -256,8 +256,9 @@ const taskDefinition = new aws.ecs.TaskDefinition("gotenberg-task", {
       {
         name: "gotenberg-container",
         image: url,
-        memory: 4096,
-        cpu: 2048,
+        memory: 16384,
+        memoryReservation: 4096,
+        cpu: 4096,
         portMappings: [
           {
             containerPort: 3000,
