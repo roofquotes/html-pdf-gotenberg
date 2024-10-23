@@ -282,8 +282,8 @@ const taskDefinition = new aws.ecs.TaskDefinition("gotenberg-task", {
   ),
   requiresCompatibilities: ["FARGATE"],
   networkMode: "awsvpc",
-  cpu: "2048",
-  memory: "4096",
+  cpu: "4096",
+  memory: "16384",
   executionRoleArn: taskExecutionRole.arn,
   taskRoleArn: taskRole.arn,
 });
