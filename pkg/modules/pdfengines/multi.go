@@ -12,12 +12,26 @@ import (
 )
 
 type multiPdfEngines struct {
-	engines []gotenberg.PdfEngine
+	mergeEngines         []gotenberg.PdfEngine
+	splitEngines         []gotenberg.PdfEngine
+	convertEngines       []gotenberg.PdfEngine
+	readMetadataEngines  []gotenberg.PdfEngine
+	writeMetadataEngines []gotenberg.PdfEngine
 }
 
-func newMultiPdfEngines(engines ...gotenberg.PdfEngine) *multiPdfEngines {
+func newMultiPdfEngines(
+	mergeEngines,
+	splitEngines,
+	convertEngines,
+	readMetadataEngines,
+	writeMetadataEngines []gotenberg.PdfEngine,
+) *multiPdfEngines {
 	return &multiPdfEngines{
-		engines: engines,
+		mergeEngines:         mergeEngines,
+		splitEngines:         splitEngines,
+		convertEngines:       convertEngines,
+		readMetadataEngines:  readMetadataEngines,
+		writeMetadataEngines: writeMetadataEngines,
 	}
 }
 
@@ -27,7 +41,7 @@ func (multi *multiPdfEngines) Merge(ctx context.Context, logger *zap.Logger, inp
 	var err error
 	errChan := make(chan error, 1)
 
-	for _, engine := range multi.engines {
+	for _, engine := range multi.mergeEngines {
 		go func(engine gotenberg.PdfEngine) {
 			errChan <- engine.Merge(ctx, logger, inputPaths, outputPath)
 		}(engine)
@@ -46,13 +60,51 @@ func (multi *multiPdfEngines) Merge(ctx context.Context, logger *zap.Logger, inp
 	return fmt.Errorf("merge PDFs with multi PDF engines: %w", err)
 }
 
+type splitResult struct {
+	outputPaths []string
+	err         error
+}
+
+// Split tries to split at intervals a given PDF thanks to its children. If the
+// context is done, it stops and returns an error.
+func (multi *multiPdfEngines) Split(ctx context.Context, logger *zap.Logger, mode gotenberg.SplitMode, inputPath, outputDirPath string) ([]string, error) {
+	var err error
+	var mu sync.Mutex // to safely append errors.
+
+	resultChan := make(chan splitResult, len(multi.splitEngines))
+
+	for _, engine := range multi.splitEngines {
+		go func(engine gotenberg.PdfEngine) {
+			outputPaths, err := engine.Split(ctx, logger, mode, inputPath, outputDirPath)
+			resultChan <- splitResult{outputPaths: outputPaths, err: err}
+		}(engine)
+	}
+
+	for range multi.splitEngines {
+		select {
+		case result := <-resultChan:
+			if result.err != nil {
+				mu.Lock()
+				err = multierr.Append(err, result.err)
+				mu.Unlock()
+			} else {
+				return result.outputPaths, nil
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return nil, fmt.Errorf("split PDF with multi PDF engines: %w", err)
+}
+
 // Convert converts the given PDF to a specific PDF format. thanks to its
 // children. If the context is done, it stops and returns an error.
 func (multi *multiPdfEngines) Convert(ctx context.Context, logger *zap.Logger, formats gotenberg.PdfFormats, inputPath, outputPath string) error {
 	var err error
 	errChan := make(chan error, 1)
 
-	for _, engine := range multi.engines {
+	for _, engine := range multi.convertEngines {
 		go func(engine gotenberg.PdfEngine) {
 			errChan <- engine.Convert(ctx, logger, formats, inputPath, outputPath)
 		}(engine)
@@ -80,16 +132,16 @@ func (multi *multiPdfEngines) ReadMetadata(ctx context.Context, logger *zap.Logg
 	var err error
 	var mu sync.Mutex // to safely append errors.
 
-	resultChan := make(chan readMetadataResult, len(multi.engines))
+	resultChan := make(chan readMetadataResult, len(multi.readMetadataEngines))
 
-	for _, engine := range multi.engines {
+	for _, engine := range multi.readMetadataEngines {
 		go func(engine gotenberg.PdfEngine) {
 			metadata, err := engine.ReadMetadata(ctx, logger, inputPath)
 			resultChan <- readMetadataResult{metadata: metadata, err: err}
 		}(engine)
 	}
 
-	for range multi.engines {
+	for range multi.readMetadataEngines {
 		select {
 		case result := <-resultChan:
 			if result.err != nil {
@@ -111,7 +163,7 @@ func (multi *multiPdfEngines) WriteMetadata(ctx context.Context, logger *zap.Log
 	var err error
 	errChan := make(chan error, 1)
 
-	for _, engine := range multi.engines {
+	for _, engine := range multi.writeMetadataEngines {
 		go func(engine gotenberg.PdfEngine) {
 			errChan <- engine.WriteMetadata(ctx, logger, metadata, inputPath)
 		}(engine)

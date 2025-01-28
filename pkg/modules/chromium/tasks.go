@@ -48,6 +48,7 @@ func printToPdfActionFunc(logger *zap.Logger, outputPath string, options PdfOpti
 			WithMarginRight(options.MarginRight).
 			WithPageRanges(pageRanges).
 			WithPreferCSSPageSize(options.PreferCssPageSize).
+			WithGenerateDocumentOutline(options.GenerateDocumentOutline).
 			// Does not seem to work.
 			// See https://github.com/gotenberg/gotenberg/issues/831.
 			WithGenerateTaggedPDF(false)
@@ -298,28 +299,33 @@ func userAgentOverride(logger *zap.Logger, userAgent string) chromedp.ActionFunc
 	}
 }
 
-func extraHttpHeadersActionFunc(logger *zap.Logger, extraHttpHeaders map[string]string) chromedp.ActionFunc {
-	return func(ctx context.Context) error {
-		if len(extraHttpHeaders) == 0 {
-			logger.Debug("no extra HTTP headers")
-			return nil
-		}
-
-		logger.Debug(fmt.Sprintf("extra HTTP headers: %+v", extraHttpHeaders))
-
-		headers := make(network.Headers, len(extraHttpHeaders))
-		for key, value := range extraHttpHeaders {
-			headers[key] = value
-		}
-
-		err := network.SetExtraHTTPHeaders(headers).Do(ctx)
-		if err == nil {
-			return nil
-		}
-
-		return fmt.Errorf("set extra HTTP headers: %w", err)
-	}
-}
+// This code has been replaced with the listenForEventRequestPaused function.
+// Indeed, the user may want to scope the headers per domain, but using
+// network.SetExtraHTTPHeaders set the headers for ALL requests from the page.
+// See https://github.com/gotenberg/gotenberg/issues/1011.
+//
+//func extraHttpHeadersActionFunc(logger *zap.Logger, extraHttpHeaders map[string]string) chromedp.ActionFunc {
+//	return func(ctx context.Context) error {
+//		if len(extraHttpHeaders) == 0 {
+//			logger.Debug("no extra HTTP headers")
+//			return nil
+//		}
+//
+//		logger.Debug(fmt.Sprintf("extra HTTP headers: %+v", extraHttpHeaders))
+//
+//		headers := make(network.Headers, len(extraHttpHeaders))
+//		for key, value := range extraHttpHeaders {
+//			headers[key] = value
+//		}
+//
+//		err := network.SetExtraHTTPHeaders(headers).Do(ctx)
+//		if err == nil {
+//			return nil
+//		}
+//
+//		return fmt.Errorf("set extra HTTP headers: %w", err)
+//	}
+//}
 
 func navigateActionFunc(logger *zap.Logger, url string, skipNetworkIdleEvent bool) chromedp.ActionFunc {
 	return func(ctx context.Context) error {

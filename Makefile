@@ -1,20 +1,11 @@
+include .env
+
 .PHONY: help
 help: ## Show the help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: it
 it: build build-tests ## Initialize the development environment
-
-GOLANG_VERSION=1.23
-DOCKER_REGISTRY=gotenberg
-DOCKER_REPOSITORY=gotenberg
-GOTENBERG_VERSION=snapshot
-GOTENBERG_USER_GID=1001
-GOTENBERG_USER_UID=1001
-NOTO_COLOR_EMOJI_VERSION=v2.047 # See https://github.com/googlefonts/noto-emoji/releases.
-PDFTK_VERSION=v3.3.3 # See https://gitlab.com/pdftk-java/pdftk/-/releases - Binary package.
-PDFCPU_VERSION=v0.8.1 # See https://github.com/pdfcpu/pdfcpu/releases.
-GOLANGCI_LINT_VERSION=v1.60.3 # See https://github.com/golangci/golangci-lint/releases.
 
 .PHONY: build
 build: ## Build the Gotenberg's Docker image
@@ -27,7 +18,7 @@ build: ## Build the Gotenberg's Docker image
 	--build-arg PDFTK_VERSION=$(PDFTK_VERSION) \
 	--build-arg PDFCPU_VERSION=$(PDFCPU_VERSION) \
 	-t $(DOCKER_REGISTRY)/$(DOCKER_REPOSITORY):$(GOTENBERG_VERSION) \
-	-f build/Dockerfile .
+	-f $(DOCKERFILE) $(DOCKER_BUILD_CONTEXT)
 
 GOTENBERG_GRACEFUL_SHUTDOWN_DURATION=30s
 API_PORT=3000
@@ -36,7 +27,7 @@ API_BIND_IP=
 API_START_TIMEOUT=30s
 API_TIMEOUT=30s
 API_BODY_LIMIT=
-API_ROOT_PATH=/
+API_ROOT_PATH="/"
 API_TRACE_HEADER=Gotenberg-Trace
 API_ENABLE_BASIC_AUTH=false
 GOTENBERG_API_BASIC_AUTH_USERNAME=
@@ -46,7 +37,7 @@ API-DOWNLOAD-FROM-DENY-LIST=
 API-DOWNLOAD-FROM-FROM-MAX-RETRY=4
 API-DISABLE-DOWNLOAD-FROM=false
 API_DISABLE_HEALTH_CHECK_LOGGING=false
-CHROMIUM_RESTART_AFTER=0
+CHROMIUM_RESTART_AFTER=10
 CHROMIUM_MAX_QUEUE_SIZE=0
 CHROMIUM_AUTO_START=false
 CHROMIUM_START_TIMEOUT=20s
@@ -72,6 +63,11 @@ LOG_LEVEL=info
 LOG_FORMAT=auto
 LOG_FIELDS_PREFIX=
 PDFENGINES_ENGINES=
+PDFENGINES_MERGE_ENGINES=qpdf,pdfcpu,pdftk
+PDFENGINES_SPLIT_ENGINES=pdfcpu,qpdf,pdftk
+PDFENGINES_CONVERT_ENGINES=libreoffice-pdfengine
+PDFENGINES_READ_METADATA_ENGINES=exiftool
+PDFENGINES_WRITE_METADATA_ENGINES=exiftool
 PDFENGINES_DISABLE_ROUTES=false
 PROMETHEUS_NAMESPACE=gotenberg
 PROMETHEUS_COLLECT_INTERVAL=1s
@@ -136,6 +132,11 @@ run: ## Start a Gotenberg container
 	--log-format=$(LOG_FORMAT) \
 	--log-fields-prefix=$(LOG_FIELDS_PREFIX) \
 	--pdfengines-engines=$(PDFENGINES_ENGINES) \
+	--pdfengines-merge-engines=$(PDFENGINES_MERGE_ENGINES) \
+	--pdfengines-split-engines=$(PDFENGINES_SPLIT_ENGINES) \
+	--pdfengines-convert-engines=$(PDFENGINES_CONVERT_ENGINES) \
+	--pdfengines-read-metadata-engines=$(PDFENGINES_READ_METADATA_ENGINES) \
+	--pdfengines-write-metadata-engines=$(PDFENGINES_WRITE_METADATA_ENGINES) \
 	--pdfengines-disable-routes=$(PDFENGINES_DISABLE_ROUTES) \
 	--prometheus-namespace=$(PROMETHEUS_NAMESPACE) \
 	--prometheus-collect-interval=$(PROMETHEUS_COLLECT_INTERVAL) \
@@ -189,20 +190,3 @@ fmt: ## Format the code and "optimize" the dependencies
 godoc: ## Run a webserver with Gotenberg godoc
 	$(info http://localhost:6060/pkg/github.com/gotenberg/gotenberg/v8)
 	godoc -http=:6060
-
-LINUX_AMD64_RELEASE=false
-
-.PHONY: release
-release: ## Build the Gotenberg's Docker image and push it to a Docker repository
-	./scripts/release.sh \
- 	$(GOLANG_VERSION) \
-	$(GOTENBERG_VERSION) \
-	$(GOTENBERG_USER_GID) \
-	$(GOTENBERG_USER_UID) \
-	$(NOTO_COLOR_EMOJI_VERSION) \
-	$(PDFTK_VERSION) \
-	$(PDFCPU_VERSION) \
-	$(DOCKER_REGISTRY) \
-	$(DOCKER_REPOSITORY) \
-	$(LINUX_AMD64_RELEASE)
-

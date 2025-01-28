@@ -48,6 +48,10 @@ func ParseError(err error) (int, string) {
 		return http.StatusTooManyRequests, http.StatusText(http.StatusTooManyRequests)
 	}
 
+	if errors.Is(err, gotenberg.ErrPdfSplitModeNotSupported) {
+		return http.StatusBadRequest, "At least one PDF engine cannot process the requested PDF split mode, while others may have failed to split due to different issues"
+	}
+
 	if errors.Is(err, gotenberg.ErrPdfFormatNotSupported) {
 		return http.StatusBadRequest, "At least one PDF engine cannot process the requested PDF format, while others may have failed to convert due to different issues"
 	}
@@ -157,9 +161,12 @@ func loggerMiddleware(logger *zap.Logger, disableLoggingForPaths []string) echo.
 			trace := c.Get("trace").(string)
 			rootPath := c.Get("rootPath").(string)
 
-			// Create the request logger and add it to our locals.
-			reqLogger := logger.With(zap.String("trace", trace))
-			c.Set("logger", reqLogger.Named(func() string {
+			// Create the application logger and add it to our locals.
+			appLogger := logger.
+				With(zap.String("log_type", "application")).
+				With(zap.String("trace", trace))
+
+			c.Set("logger", appLogger.Named(func() string {
 				return strings.ReplaceAll(
 					strings.ReplaceAll(c.Request().URL.Path, rootPath, ""),
 					"/",
@@ -172,6 +179,11 @@ func loggerMiddleware(logger *zap.Logger, disableLoggingForPaths []string) echo.
 			if err != nil {
 				c.Error(err)
 			}
+
+			// Create the access logger.
+			accessLogger := logger.
+				With(zap.String("log_type", "access")).
+				With(zap.String("trace", trace))
 
 			for _, path := range disableLoggingForPaths {
 				URI := fmt.Sprintf("%s%s", rootPath, path)
@@ -208,9 +220,9 @@ func loggerMiddleware(logger *zap.Logger, disableLoggingForPaths []string) echo.
 			fields[11] = zap.Int64("bytes_out", c.Response().Size)
 
 			if err != nil {
-				reqLogger.Error(err.Error(), fields...)
+				accessLogger.Error(err.Error(), fields...)
 			} else {
-				reqLogger.Info("request handled", fields...)
+				accessLogger.Info("request handled", fields...)
 			}
 
 			return nil

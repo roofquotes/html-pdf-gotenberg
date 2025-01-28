@@ -15,6 +15,7 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/dlclark/regexp2"
+	"github.com/shirou/gopsutil/v4/process"
 	"go.uber.org/zap"
 
 	"github.com/gotenberg/gotenberg/v8/pkg/gotenberg"
@@ -62,7 +63,7 @@ func newChromiumBrowser(arguments browserArguments) browser {
 	b := &chromiumBrowser{
 		initialCtx: context.Background(),
 		arguments:  arguments,
-		fs:         gotenberg.NewFileSystem(),
+		fs:         gotenberg.NewFileSystem(new(gotenberg.OsMkdirAll)),
 	}
 	b.isStarted.Store(false)
 
@@ -162,21 +163,61 @@ func (b *chromiumBrowser) Stop(logger *zap.Logger) error {
 
 	// Always remove the user profile directory created by Chromium.
 	copyUserProfileDirPath := b.userProfileDirPath
-	defer func(userProfileDirPath string) {
+	expirationTime := time.Now()
+	defer func(userProfileDirPath string, expirationTime time.Time) {
+		// See:
+		// https://github.com/SeleniumHQ/docker-selenium/blob/7216d060d86872afe853ccda62db0dfab5118dc7/NodeChrome/chrome-cleanup.sh
+		// https://github.com/SeleniumHQ/docker-selenium/blob/7216d060d86872afe853ccda62db0dfab5118dc7/NodeChromium/chrome-cleanup.sh
+
+		// Clean up stuck processes.
+		ps, err := process.Processes()
+		if err != nil {
+			logger.Error(fmt.Sprintf("list processes: %v", err))
+		} else {
+			for _, p := range ps {
+				func() {
+					cmdline, err := p.Cmdline()
+					if err != nil {
+						return
+					}
+
+					if !strings.Contains(cmdline, "chromium/chromium") && !strings.Contains(cmdline, "chrome/chrome") {
+						return
+					}
+
+					killCtx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+					defer cancel()
+
+					err = p.KillWithContext(killCtx)
+					if err != nil {
+						logger.Error(fmt.Sprintf("kill process: %v", err))
+					} else {
+						logger.Debug(fmt.Sprintf("Chromium process %d killed", p.Pid))
+					}
+				}()
+			}
+		}
+
 		go func() {
 			// FIXME: Chromium seems to recreate the user profile directory
 			//  right after its deletion if we do not wait a certain amount
 			//  of time before deleting it.
 			<-time.After(10 * time.Second)
 
-			err := os.RemoveAll(userProfileDirPath)
+			err = os.RemoveAll(userProfileDirPath)
 			if err != nil {
 				logger.Error(fmt.Sprintf("remove Chromium's user profile directory: %s", err))
+			} else {
+				logger.Debug(fmt.Sprintf("'%s' Chromium's user profile directory removed", userProfileDirPath))
 			}
 
-			logger.Debug(fmt.Sprintf("'%s' Chromium's user profile directory removed", userProfileDirPath))
+			// Also remove Chromium specific files in the temporary directory.
+			err = gotenberg.GarbageCollect(logger, os.TempDir(), []string{".org.chromium.Chromium", ".com.google.Chrome"}, expirationTime)
+			if err != nil {
+				logger.Error(err.Error())
+			}
 		}()
-	}(copyUserProfileDirPath)
+	}(copyUserProfileDirPath, expirationTime)
 
 	b.ctxMu.Lock()
 	defer b.ctxMu.Unlock()
@@ -228,7 +269,6 @@ func (b *chromiumBrowser) pdf(ctx context.Context, logger *zap.Logger, url, outp
 		disableJavaScriptActionFunc(logger, b.arguments.disableJavaScript),
 		setCookiesActionFunc(logger, options.Cookies),
 		userAgentOverride(logger, options.UserAgent),
-		extraHttpHeadersActionFunc(logger, options.ExtraHttpHeaders),
 		navigateActionFunc(logger, url, options.SkipNetworkIdleEvent),
 		hideDefaultWhiteBackgroundActionFunc(logger, options.OmitBackground, options.PrintBackground),
 		forceExactColorsActionFunc(),
@@ -252,7 +292,6 @@ func (b *chromiumBrowser) screenshot(ctx context.Context, logger *zap.Logger, ur
 		disableJavaScriptActionFunc(logger, b.arguments.disableJavaScript),
 		setCookiesActionFunc(logger, options.Cookies),
 		userAgentOverride(logger, options.UserAgent),
-		extraHttpHeadersActionFunc(logger, options.ExtraHttpHeaders),
 		navigateActionFunc(logger, url, options.SkipNetworkIdleEvent),
 		hideDefaultWhiteBackgroundActionFunc(logger, options.OmitBackground, true),
 		forceExactColorsActionFunc(),
@@ -291,17 +330,35 @@ func (b *chromiumBrowser) do(ctx context.Context, logger *zap.Logger, url string
 	defer taskCancel()
 
 	// We validate all others requests against our allow / deny lists.
-	// If a request does not pass the validation, we make it fail.
-	listenForEventRequestPaused(taskCtx, logger, b.arguments.allowList, b.arguments.denyList)
+	// If a request does not pass the validation, we make it fail. It also set
+	// the extra HTTP headers, if any.
+	// See https://github.com/gotenberg/gotenberg/issues/1011.
+	listenForEventRequestPaused(taskCtx, logger, eventRequestPausedOptions{
+		allowList:        b.arguments.allowList,
+		denyList:         b.arguments.denyList,
+		extraHttpHeaders: options.ExtraHttpHeaders,
+	})
 
 	var (
-		invalidHttpStatusCode   error
-		invalidHttpStatusCodeMu sync.RWMutex
+		invalidHttpStatusCode           error
+		invalidHttpStatusCodeMu         sync.RWMutex
+		invalidResourceHttpStatusCode   error
+		invalidResourceHttpStatusCodeMu sync.RWMutex
 	)
 
-	// See https://github.com/gotenberg/gotenberg/issues/613.
-	if len(options.FailOnHttpStatusCodes) != 0 {
-		listenForEventResponseReceived(taskCtx, logger, url, options.FailOnHttpStatusCodes, &invalidHttpStatusCode, &invalidHttpStatusCodeMu)
+	// See:
+	// https://github.com/gotenberg/gotenberg/issues/613.
+	// https://github.com/gotenberg/gotenberg/issues/1021.
+	if len(options.FailOnHttpStatusCodes) != 0 || len(options.FailOnResourceHttpStatusCodes) != 0 {
+		listenForEventResponseReceived(taskCtx, logger, eventResponseReceivedOptions{
+			mainPageUrl:                     url,
+			failOnHttpStatusCodes:           options.FailOnHttpStatusCodes,
+			invalidHttpStatusCode:           &invalidHttpStatusCode,
+			invalidHttpStatusCodeMu:         &invalidHttpStatusCodeMu,
+			failOnResourceOnHttpStatusCode:  options.FailOnResourceHttpStatusCodes,
+			invalidResourceHttpStatusCode:   &invalidResourceHttpStatusCode,
+			invalidResourceHttpStatusCodeMu: &invalidResourceHttpStatusCodeMu,
+		})
 	}
 
 	var (
@@ -315,14 +372,22 @@ func (b *chromiumBrowser) do(ctx context.Context, logger *zap.Logger, url string
 	}
 
 	var (
-		loadingFailed   error
-		loadingFailedMu sync.RWMutex
+		loadingFailed           error
+		loadingFailedMu         sync.RWMutex
+		resourceLoadingFailed   error
+		resourceLoadingFailedMu sync.RWMutex
 	)
 
 	// See:
-	// https://github.com/gotenberg/gotenberg/issues/913
-	// https://github.com/gotenberg/gotenberg/issues/959
-	listenForEventLoadingFailed(taskCtx, logger, &loadingFailed, &loadingFailedMu)
+	// https://github.com/gotenberg/gotenberg/issues/913.
+	// https://github.com/gotenberg/gotenberg/issues/959.
+	// https://github.com/gotenberg/gotenberg/issues/1021.
+	listenForEventLoadingFailed(taskCtx, logger, eventLoadingFailedOptions{
+		loadingFailed:           &loadingFailed,
+		loadingFailedMu:         &loadingFailedMu,
+		resourceLoadingFailed:   &resourceLoadingFailed,
+		resourceLoadingFailedMu: &resourceLoadingFailedMu,
+	})
 
 	err = chromedp.Run(taskCtx, tasks...)
 	if err != nil {
@@ -351,6 +416,14 @@ func (b *chromiumBrowser) do(ctx context.Context, logger *zap.Logger, url string
 		return fmt.Errorf("%v: %w", invalidHttpStatusCode, ErrInvalidHttpStatusCode)
 	}
 
+	// See https://github.com/gotenberg/gotenberg/issues/1021.
+	invalidResourceHttpStatusCodeMu.RLock()
+	defer invalidResourceHttpStatusCodeMu.RUnlock()
+
+	if invalidResourceHttpStatusCode != nil {
+		return fmt.Errorf("%v: %w", invalidResourceHttpStatusCode, ErrInvalidResourceHttpStatusCode)
+	}
+
 	// See https://github.com/gotenberg/gotenberg/issues/262.
 	consoleExceptionsMu.RLock()
 	defer consoleExceptionsMu.RUnlock()
@@ -360,13 +433,20 @@ func (b *chromiumBrowser) do(ctx context.Context, logger *zap.Logger, url string
 	}
 
 	// See:
-	// https://github.com/gotenberg/gotenberg/issues/913
-	// https://github.com/gotenberg/gotenberg/issues/959
+	// https://github.com/gotenberg/gotenberg/issues/913.
+	// https://github.com/gotenberg/gotenberg/issues/959.
 	loadingFailedMu.RLock()
 	defer loadingFailedMu.RUnlock()
 
 	if loadingFailed != nil {
 		return fmt.Errorf("%v: %w", loadingFailed, ErrLoadingFailed)
+	}
+
+	// See https://github.com/gotenberg/gotenberg/issues/1021.
+	if options.FailOnResourceLoadingFailed {
+		if resourceLoadingFailed != nil {
+			return fmt.Errorf("%v: %w", resourceLoadingFailed, ErrResourceLoadingFailed)
+		}
 	}
 
 	return nil
