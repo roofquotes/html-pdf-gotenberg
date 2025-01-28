@@ -30,7 +30,7 @@ Version: %s
 
 // Version is the... version of the Gotenberg application. We set it at the
 // build stage of the Docker image.
-var Version = "snapshot"
+var Version = "latest"
 
 // Run starts the Gotenberg application. Call this in the main of your program.
 func Run() {
