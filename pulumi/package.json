@@ -1,5 +1,5 @@
 {
-    "name": "html-pdf-gotenberg",
+    "name": "html-pdf-hotenberg",
     "main": "index.ts",
     "devDependencies": {
         "@types/node": "^18",

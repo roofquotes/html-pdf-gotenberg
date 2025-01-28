@@ -1,4 +1,4 @@
-name: html-pdf-gotenberg
+name: html-pdf-hotenberg
 description: A minimal AWS TypeScript Pulumi program
 runtime:
   name: nodejs
